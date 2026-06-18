@@ -105,6 +105,18 @@ def init_db():
 
         # Normal eligible
         ("ORD-015", "C015", "Portable Charger",        "physical", 29.99,  (today - timedelta(days=14)).strftime("%Y-%m-%d"), 0),
+
+        # Alice — 2nd order (defective keyboard, within 30 days → approved via defective override)
+        ("ORD-016", "C001", "Mechanical Keyboard",     "physical", 149.99, (today - timedelta(days=7)).strftime("%Y-%m-%d"),  1),
+
+        # Bob — 2nd order (digital, non-refundable)
+        ("ORD-017", "C002", "Notion AI Annual Plan",   "digital",  192.00, (today - timedelta(days=2)).strftime("%Y-%m-%d"),  0),
+
+        # Grace — 2nd order (outside 30-day window → deny)
+        ("ORD-018", "C007", "Monitor Stand",           "physical", 55.00,  (today - timedelta(days=40)).strftime("%Y-%m-%d"), 0),
+
+        # Mia — 2nd order (opened, change of mind → deny)
+        ("ORD-019", "C013", "Noise Cancelling Earbuds","physical", 99.00,  (today - timedelta(days=5)).strftime("%Y-%m-%d"),  1),
     ]
 
     c.executemany(

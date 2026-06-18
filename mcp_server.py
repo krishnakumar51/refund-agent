@@ -57,32 +57,36 @@ def lookup_customer(email: str) -> dict:
 @mcp.tool()
 def get_order_details(customer_id: str) -> dict:
     """
-    Get the most recent order for a customer_id.
-    Call after lookup_customer. Returns order info needed for refund validation.
+    Get all recent orders for a customer_id (up to 5, newest first).
+    Call after lookup_customer. Present the list to the customer so they can
+    specify which item they want to refund. Use the order_id when calling
+    validate_and_process_refund.
     """
     db = get_db()
-    row = db.execute(
-        "SELECT * FROM orders WHERE customer_id = ? ORDER BY purchase_date DESC LIMIT 1",
+    rows = db.execute(
+        "SELECT * FROM orders WHERE customer_id = ? ORDER BY purchase_date DESC LIMIT 5",
         (customer_id,)
-    ).fetchone()
+    ).fetchall()
     db.close()
 
-    if not row:
+    if not rows:
         return {"found": False, "message": "No orders found for this customer."}
 
-    days_since = (datetime.now() - datetime.strptime(row["purchase_date"], "%Y-%m-%d")).days
+    orders = []
+    for row in rows:
+        days_since = (datetime.now() - datetime.strptime(row["purchase_date"], "%Y-%m-%d")).days
+        orders.append({
+            "order_id":            row["order_id"],
+            "item_name":           row["item_name"],
+            "item_type":           row["item_type"],
+            "amount":              row["amount"],
+            "purchase_date":       row["purchase_date"],
+            "days_since_purchase": days_since,
+            "is_opened":           bool(row["is_opened"]),
+            "refund_status":       row["refund_status"],
+        })
 
-    return {
-        "found":               True,
-        "order_id":            row["order_id"],
-        "item_name":           row["item_name"],
-        "item_type":           row["item_type"],
-        "amount":              row["amount"],
-        "purchase_date":       row["purchase_date"],
-        "days_since_purchase": days_since,
-        "is_opened":           bool(row["is_opened"]),
-        "refund_status":       row["refund_status"],
-    }
+    return {"found": True, "orders": orders}
 
 
 # ── Tool 3 ────────────────────────────────────────────────────────────────
