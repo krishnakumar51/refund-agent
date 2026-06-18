@@ -82,7 +82,6 @@ def get_order_details(customer_id: str) -> dict:
             "amount":              row["amount"],
             "purchase_date":       row["purchase_date"],
             "days_since_purchase": days_since,
-            "is_opened":           bool(row["is_opened"]),
             "refund_status":       row["refund_status"],
         })
 
@@ -115,6 +114,7 @@ def validate_and_process_refund(customer_id: str, order_id: str, reason: str) ->
     days_since   = (datetime.now() - datetime.strptime(order["purchase_date"], "%Y-%m-%d")).days
     is_defective = any(w in reason.lower() for w in
                        ["defect", "broken", "damage", "faulty", "not working", "dead on arrival"])
+    is_opened    = any(w in reason.lower() for w in ["opened", "open", "used", "unsealed"])
 
     if order["item_type"] == "digital":
         db.close()
@@ -133,7 +133,7 @@ def validate_and_process_refund(customer_id: str, order_id: str, reason: str) ->
             return {"approved": False,
                     "reason": "Account received a refund in the past 6 months. Limit is one per 6 months."}
 
-    if not is_defective and order["is_opened"]:
+    if not is_defective and is_opened:
         db.close()
         return {"approved": False,
                 "reason": "Change of mind refunds require the item to be unopened and in original condition."}
