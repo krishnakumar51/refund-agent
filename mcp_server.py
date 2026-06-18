@@ -1,22 +1,21 @@
 """
 mcp_server.py — RefundAgent MCP Server
-ElevenLabs SSE endpoint: https://your-domain/sse
+Uses fastmcp v3 directly.
+
+ElevenLabs SSE URL: https://your-domain/sse
+Health check:       https://your-domain/
 """
 
 import os
 import sqlite3
-import uvicorn
 from datetime import datetime
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 from database import init_db
 
-# ── Init ──────────────────────────────────────────────────────────────────
+# ── Init DB on startup ────────────────────────────────────────────────────
 init_db()
 
 mcp = FastMCP("RefundAgent")
-app = FastAPI()
 
 DB = "crm.db"
 
@@ -26,18 +25,7 @@ def get_db():
     return conn
 
 
-# ── Health check ──────────────────────────────────────────────────────────
-
-@app.get("/")
-def health():
-    return {
-        "status": "ok",
-        "server": "RefundAgent MCP",
-        "tools": ["lookup_customer", "get_order_details", "validate_and_process_refund"]
-    }
-
-
-# ── Tool 1: lookup_customer ───────────────────────────────────────────────
+# ── Tool 1 ────────────────────────────────────────────────────────────────
 
 @mcp.tool()
 def lookup_customer(email: str) -> dict:
@@ -56,20 +44,20 @@ def lookup_customer(email: str) -> dict:
         return {"found": False, "message": "No account found with that email address."}
 
     return {
-        "found": True,
-        "customer_id":     row["customer_id"],
-        "name":            row["name"],
-        "email":           row["email"],
-        "last_refund_date": row["last_refund_date"]
+        "found":            True,
+        "customer_id":      row["customer_id"],
+        "name":             row["name"],
+        "email":            row["email"],
+        "last_refund_date": row["last_refund_date"],
     }
 
 
-# ── Tool 2: get_order_details ─────────────────────────────────────────────
+# ── Tool 2 ────────────────────────────────────────────────────────────────
 
 @mcp.tool()
 def get_order_details(customer_id: str) -> dict:
     """
-    Get the most recent order for a customer.
+    Get the most recent order for a customer_id.
     Call after lookup_customer. Returns order info needed for refund validation.
     """
     db = get_db()
@@ -85,7 +73,7 @@ def get_order_details(customer_id: str) -> dict:
     days_since = (datetime.now() - datetime.strptime(row["purchase_date"], "%Y-%m-%d")).days
 
     return {
-        "found": True,
+        "found":               True,
         "order_id":            row["order_id"],
         "item_name":           row["item_name"],
         "item_type":           row["item_type"],
@@ -93,11 +81,11 @@ def get_order_details(customer_id: str) -> dict:
         "purchase_date":       row["purchase_date"],
         "days_since_purchase": days_since,
         "is_opened":           bool(row["is_opened"]),
-        "refund_status":       row["refund_status"]
+        "refund_status":       row["refund_status"],
     }
 
 
-# ── Tool 3: validate_and_process_refund ──────────────────────────────────
+# ── Tool 3 ────────────────────────────────────────────────────────────────
 
 @mcp.tool()
 def validate_and_process_refund(customer_id: str, order_id: str, reason: str) -> dict:
@@ -105,10 +93,12 @@ def validate_and_process_refund(customer_id: str, order_id: str, reason: str) ->
     Validate and process a refund against company policy.
     Policy: 30-day window, no digital goods, max 1 refund per 6 months,
     change-of-mind requires unopened item, defective items always approved.
+    Call after confirming order details with the customer.
     """
     db = get_db()
     customer = db.execute("SELECT * FROM customers WHERE customer_id = ?", (customer_id,)).fetchone()
-    order    = db.execute("SELECT * FROM orders WHERE order_id = ? AND customer_id = ?", (order_id, customer_id)).fetchone()
+    order    = db.execute("SELECT * FROM orders WHERE order_id = ? AND customer_id = ?",
+                          (order_id, customer_id)).fetchone()
 
     if not customer or not order:
         db.close()
@@ -119,29 +109,30 @@ def validate_and_process_refund(customer_id: str, order_id: str, reason: str) ->
         return {"approved": False, "reason": "A refund has already been processed for this order."}
 
     days_since   = (datetime.now() - datetime.strptime(order["purchase_date"], "%Y-%m-%d")).days
-    is_defective = any(w in reason.lower() for w in ["defect", "broken", "damage", "faulty", "not working", "dead on arrival"])
+    is_defective = any(w in reason.lower() for w in
+                       ["defect", "broken", "damage", "faulty", "not working", "dead on arrival"])
 
-    # Rule 1 — Digital goods
     if order["item_type"] == "digital":
         db.close()
         return {"approved": False, "reason": "Digital products are non-refundable per our policy."}
 
-    # Rule 2 — 30-day window
     if days_since > 30:
         db.close()
-        return {"approved": False, "reason": f"Order is {days_since} days old. Refunds are only accepted within 30 days of purchase."}
+        return {"approved": False,
+                "reason": f"Order is {days_since} days old. Refunds are only accepted within 30 days."}
 
-    # Rule 3 — 6-month frequency limit
     if customer["last_refund_date"]:
-        days_since_refund = (datetime.now() - datetime.strptime(customer["last_refund_date"], "%Y-%m-%d")).days
+        days_since_refund = (datetime.now() - datetime.strptime(
+            customer["last_refund_date"], "%Y-%m-%d")).days
         if days_since_refund < 180:
             db.close()
-            return {"approved": False, "reason": "Your account received a refund in the past 6 months. Only one refund per 6 months is allowed."}
+            return {"approved": False,
+                    "reason": "Account received a refund in the past 6 months. Limit is one per 6 months."}
 
-    # Rule 4 — Change of mind must be unopened
     if not is_defective and order["is_opened"]:
         db.close()
-        return {"approved": False, "reason": "Change of mind refunds require the item to be unopened and in original condition."}
+        return {"approved": False,
+                "reason": "Change of mind refunds require the item to be unopened and in original condition."}
 
     # ── Approve ───────────────────────────────────────────────────────────
     db.execute("UPDATE orders SET refund_status = 'approved' WHERE order_id = ?", (order_id,))
@@ -154,18 +145,14 @@ def validate_and_process_refund(customer_id: str, order_id: str, reason: str) ->
         "approved": True,
         "amount":   order["amount"],
         "message":  f"Refund of ${order['amount']:.2f} approved for {order['item_name']}. "
-                    "Funds will be returned to your original payment method within 5–7 business days."
+                    "Funds will be returned within 5–7 business days.",
     }
-
-
-# ── Mount MCP SSE on FastAPI ──────────────────────────────────────────────
-
-app.mount("/mcp", mcp.sse_app())
 
 
 # ── Run ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    print(f"Server starting on port {port}")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    print(f"RefundAgent MCP starting on port {port}")
+    print(f"SSE endpoint: /sse")
+    mcp.run(transport="sse", host="0.0.0.0", port=port)
