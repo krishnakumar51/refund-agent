@@ -10,9 +10,6 @@ import os
 import sqlite3
 from datetime import datetime
 from fastmcp import FastMCP
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 from database import init_db
 
 # ── Init DB on startup ────────────────────────────────────────────────────
@@ -159,50 +156,7 @@ def validate_and_process_refund(customer_id: str, order_id: str, reason: str) ->
 # ── Run ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Build FastAPI wrapper with REST endpoints for the frontend
-    api = FastAPI(title="RefundAgent")
-    api.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["GET"],
-        allow_headers=["*"],
-    )
-
-    @api.get("/api/orders")
-    def get_all_orders():
-        """Returns all orders with customer info — used by admin dashboard."""
-        db = get_db()
-        rows = db.execute("""
-            SELECT o.order_id, c.name, c.email, o.item_name, o.item_type,
-                   o.amount, o.purchase_date, o.is_opened, o.refund_status
-            FROM orders o
-            JOIN customers c ON o.customer_id = c.customer_id
-            ORDER BY o.purchase_date DESC
-        """).fetchall()
-        db.close()
-        return [dict(r) for r in rows]
-
-    @api.get("/api/stats")
-    def get_stats():
-        """Returns summary counts for the dashboard header."""
-        db = get_db()
-        rows = db.execute(
-            "SELECT refund_status, COUNT(*) as n FROM orders GROUP BY refund_status"
-        ).fetchall()
-        db.close()
-        counts = {r["refund_status"]: r["n"] for r in rows}
-        total = sum(counts.values())
-        return {
-            "total": total,
-            "approved": counts.get("approved", 0),
-            "pending": counts.get("none", 0),
-        }
-
-    # Mount the MCP SSE server on the same app
-    mcp_asgi = mcp.http_app()
-    api.mount("/", mcp_asgi)
-
     port = int(os.environ.get("PORT", 8000))
-    print(f"RefundAgent starting on port {port}")
-    print(f"SSE endpoint: /sse  |  API: /api/orders  /api/stats")
-    uvicorn.run(api, host="0.0.0.0", port=port)
+    print(f"RefundAgent MCP starting on port {port}")
+    print(f"SSE endpoint: /sse")
+    mcp.run(transport="sse", host="0.0.0.0", port=port)
