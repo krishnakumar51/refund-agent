@@ -1,9 +1,7 @@
 """
 mcp_server.py — RefundAgent MCP Server
-Uses fastmcp v3 directly.
-
-ElevenLabs SSE URL: https://your-domain/sse
-Health check:       https://your-domain/
+SSE transport (/sse)  — for ElevenLabs
+REST API (/api/orders, /api/stats) — for Lovable frontend
 """
 
 import os
@@ -11,6 +9,13 @@ import sqlite3
 from datetime import datetime
 from fastmcp import FastMCP
 from database import init_db
+from starlette.applications import Starlette
+from starlette.routing import Route, Mount
+from starlette.responses import JSONResponse
+from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from mcp.server.sse import SseServerTransport
+import uvicorn
 
 # ── Init DB on startup ────────────────────────────────────────────────────
 init_db()
@@ -153,10 +158,68 @@ def validate_and_process_refund(customer_id: str, order_id: str, reason: str) ->
     }
 
 
-# ── Run ───────────────────────────────────────────────────────────────────
+# ── REST API endpoints (for Lovable frontend) ─────────────────────────────
+
+async def api_orders(request: Request):
+    db = get_db()
+    rows = db.execute("""
+        SELECT o.order_id, c.name AS customer_name, c.email,
+               o.item_name, o.item_type, o.amount,
+               o.purchase_date, o.refund_status
+        FROM orders o
+        JOIN customers c ON o.customer_id = c.customer_id
+        ORDER BY o.purchase_date DESC
+    """).fetchall()
+    db.close()
+    return JSONResponse([dict(r) for r in rows])
+
+
+async def api_stats(request: Request):
+    db = get_db()
+    total    = db.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+    approved = db.execute("SELECT COUNT(*) FROM orders WHERE refund_status='approved'").fetchone()[0]
+    db.close()
+    return JSONResponse({
+        "total_orders":    total,
+        "refund_initiated": approved,
+        "orders_active":   total - approved,
+        "approval_rate":   round(approved / total * 100) if total else 0,
+    })
+
+
+# ── SSE transport (for ElevenLabs MCP) ───────────────────────────────────
+
+sse = SseServerTransport("/messages/")
+
+async def handle_sse(request: Request):
+    async with sse.connect_sse(
+        request.scope, request.receive, request._send
+    ) as streams:
+        await mcp._mcp_server.run(
+            streams[0], streams[1],
+            mcp._mcp_server.create_initialization_options()
+        )
+
+
+# ── Combined Starlette app ────────────────────────────────────────────────
+
+_app = Starlette(routes=[
+    Route("/api/orders", api_orders),
+    Route("/api/stats",  api_stats),
+    Route("/sse",        handle_sse),
+    Mount("/messages/",  app=sse.handle_post_message),
+])
+
+app = CORSMiddleware(
+    _app,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    print(f"RefundAgent MCP starting on port {port}")
-    print(f"SSE endpoint: /sse")
-    mcp.run(transport="sse", host="0.0.0.0", port=port)
+    print(f"RefundAgent MCP starting on :{port}")
+    print(f"  SSE  → /sse")
+    print(f"  REST → /api/orders  /api/stats")
+    uvicorn.run(app, host="0.0.0.0", port=port)
