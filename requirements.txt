@@ -1,2 +1,4 @@
 mcp[cli]
 fastmcp
+fastapi
+uvicorn[standard]
